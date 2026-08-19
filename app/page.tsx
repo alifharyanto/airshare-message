@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle } from "lucide-react";
+import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle, Link } from "lucide-react";
 
 type Participant = { username: string; status: string; joined_at: string; typing: number };
 type Attachment = { url: string; name: string; type: string };
@@ -35,28 +35,62 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // 1. CEK URL & SESSION
   useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const joinCode = urlParams.get('join'); 
+    const urlRoomId = urlParams.get('room'); 
+
+    if (joinCode) {
+      setAuthMode("join");
+      setRoomCode(joinCode);
+    }
+
     const token = localStorage.getItem("chat_session_token");
+
     if (token) {
       fetch(`/api/chat?action=check_session&token=${token}`)
         .then(res => res.json())
         .then(data => {
           if (data.success) {
+            // Mencegah masuk ke URL Private Room orang lain
+            if (urlRoomId && urlRoomId !== data.room.id) {
+               alert("Sesi tidak cocok! Kamu tidak bisa menggunakan link private orang lain.");
+               window.location.href = '/';
+               return;
+            }
+            
             setSessionToken(token);
             setUsername(data.user.username);
             setRoomData(data.room);
             setIsOwner(data.isOwner);
             setView("chat");
+            
+            // Paksa update URL di address bar jika sebelumnya kosongan (hanya domain utama)
+            if (!urlRoomId) {
+              window.history.replaceState(null, '', `/?room=${data.room.id}`);
+            }
+
           } else {
             localStorage.removeItem("chat_session_token");
+            if (urlRoomId) {
+              alert("Akses Ditolak! Sesi telah digunakan atau tidak valid. Silakan gabung via Kode Invite.");
+              window.location.href = '/';
+            }
           }
           setIsLoading(false);
         }).catch(() => setIsLoading(false));
     } else {
       setIsLoading(false);
+      // Jika mencoba akses link private tapi tidak punya akun lokal
+      if (urlRoomId) {
+        alert("Akses Ditolak! Link ini adalah sesi private dan sudah digunakan.");
+        window.location.href = '/';
+      }
     }
   }, []);
 
+  // 2. POLLING DATA
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (view === "chat" && sessionToken && roomData) {
@@ -69,7 +103,7 @@ export default function App() {
           setIsOwner(data.isOwner);
         } else if (data.expired) {
           alert("Sesi ruangan ini telah diakhiri / expired.");
-          handleLogout(false); // logout tanpa kirim api leave lagi
+          handleLogout(false);
         }
       };
       pollData();
@@ -82,6 +116,7 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // FUNGSI BUAT ROOM BARU
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (parseInt(duration) > 24 || parseInt(duration) < 1) return alert("Durasi maksimal 24 jam!");
@@ -97,13 +132,12 @@ export default function App() {
     const data = await res.json();
     if (data.success) {
       localStorage.setItem("chat_session_token", data.sessionToken);
-      setSessionToken(data.sessionToken);
-      setRoomData({ id: data.roomId, code: data.roomCode, name: roomName, max_users: parseInt(maxUsers), expires_at: "" });
-      setIsOwner(true);
-      setView("chat");
+      // HARD REDIRECT agar URL di address bar browser 100% langsung berubah
+      window.location.href = `/?room=${data.roomId}`;
     }
   };
 
+  // FUNGSI JOIN ROOM
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     const formData = new FormData();
@@ -114,7 +148,8 @@ export default function App() {
     const data = await res.json();
     if (data.success) {
       localStorage.setItem("chat_session_token", data.sessionToken);
-      window.location.reload(); 
+      // HARD REDIRECT
+      window.location.href = `/?room=${data.roomId}`; 
     } else {
       alert(data.error);
     }
@@ -128,7 +163,7 @@ export default function App() {
     }
     localStorage.removeItem("chat_session_token");
     setSessionToken("");
-    setView("auth");
+    window.location.href = '/'; // Reset URL Total
   };
 
   const handleCloseRoom = async () => {
@@ -139,29 +174,32 @@ export default function App() {
     handleLogout(false);
   };
 
+  const handleCopyInviteLink = () => {
+    if (roomData) {
+      const inviteUrl = `${window.location.origin}/?join=${roomData.code}`;
+      navigator.clipboard.writeText(inviteUrl);
+      alert("Link Invite Berhasil Disalin!\n\nKirimkan link ini ke temanmu. Link ini aman dan tidak akan membocorkan sesimu.");
+    }
+  };
+
   const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputText(e.target.value);
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    
     const formData = new FormData();
     formData.append("token", sessionToken);
     fetch("/api/chat?action=typing", { method: "POST", body: formData });
-
     typingTimeoutRef.current = setTimeout(() => {}, 3000);
   };
 
   const handleSend = async () => {
     if (!inputText.trim() && selectedFiles.length === 0) return;
-
     const formData = new FormData();
     formData.append("token", sessionToken);
     formData.append("text", inputText);
     selectedFiles.forEach((file) => formData.append("files", file));
-
     setInputText("");
     setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
-
     await fetch("/api/chat?action=send_message", { method: "POST", body: formData });
   };
 
@@ -190,10 +228,7 @@ export default function App() {
         const codeId = `${msgId}-code-${index}`;
         return (
           <div key={index} className="relative bg-[#1e1e1e] text-[#d4d4d4] p-3 rounded-lg my-1 shadow-inner text-[13px] font-mono group overflow-hidden">
-             <button 
-                onClick={() => handleCopy(code, codeId)} 
-                className="absolute top-2 right-2 p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-white transition opacity-0 group-hover:opacity-100"
-              >
+             <button onClick={() => handleCopy(code, codeId)} className="absolute top-2 right-2 p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-white transition opacity-0 group-hover:opacity-100">
                 {copiedId === codeId ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
               </button>
             <pre className="overflow-x-auto"><code>{code}</code></pre>
@@ -208,14 +243,14 @@ export default function App() {
 
   if (isLoading) return <div className="flex h-screen items-center justify-center bg-gray-100 text-gray-800 font-medium">Memuat Sesi...</div>;
 
-  // ==== TAMPILAN LOGIN (CREATE / JOIN) ====
+  // ==== TAMPILAN LOGIN ====
   if (view === "auth") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#f0f2f5] px-4 font-sans">
-        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100">
           <div className="text-center mb-6">
             <h1 className="text-3xl font-extrabold text-[#00a884] mb-2">FX Secure Chat</h1>
-            <p className="text-gray-500 text-sm">Room bersifat sementara. Privasi terjaga.</p>
+            <p className="text-gray-500 text-sm">Sesi terlindungi. Privasi terjaga.</p>
           </div>
 
           <div className="flex rounded-lg bg-gray-100 p-1 mb-6">
@@ -253,7 +288,7 @@ export default function App() {
     );
   }
 
-  // ==== TAMPILAN CHAT UTAMA ====
+  // ==== TAMPILAN CHAT ====
   return (
     <div className="flex h-screen bg-gray-100 font-sans">
       
@@ -273,8 +308,10 @@ export default function App() {
       <div className="hidden md:flex w-[350px] flex-col bg-white border-r">
         <div className="p-4 bg-gray-50 flex flex-col gap-1 border-b">
           <h2 className="font-bold text-xl text-gray-800">{roomData?.name}</h2>
-          <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-200 w-max px-2 py-1 rounded font-medium">
-            <span>Kode Share:</span> <span className="font-bold text-black tracking-wider text-sm">{roomData?.code}</span>
+          <div className="flex items-center justify-between mt-1">
+            <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-200 w-max px-2 py-1 rounded font-medium">
+              <span>Kode:</span> <span className="font-bold text-black tracking-wider text-sm">{roomData?.code}</span>
+            </div>
           </div>
         </div>
         
@@ -299,11 +336,14 @@ export default function App() {
         </div>
         
         <div className="p-4 border-t bg-gray-50 flex flex-col gap-3">
+          <button onClick={handleCopyInviteLink} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-blue-500 rounded-xl hover:bg-blue-600 font-bold transition shadow-sm">
+            <Link size={18}/> Salin Link Invite
+          </button>
+
           <button onClick={() => handleLogout()} className="w-full flex items-center justify-center gap-2 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 font-bold transition shadow-sm">
             <LogOut size={18}/> Keluar Room
           </button>
           
-          {/* TOMBOL KHUSUS OWNER */}
           {isOwner && (
             <button onClick={handleCloseRoom} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-red-500 rounded-xl hover:bg-red-600 font-bold transition shadow-md">
               <AlertCircle size={18}/> Tutup Room (Hapus)
@@ -317,7 +357,9 @@ export default function App() {
         <div className="md:hidden bg-white px-4 py-3 flex items-center justify-between border-b shadow-sm z-10">
           <div>
             <h1 className="font-bold text-gray-800">{roomData?.name}</h1>
-            <p className="text-xs font-mono text-gray-600 font-semibold bg-gray-100 inline-block px-1.5 py-0.5 rounded mt-1">Kode: {roomData?.code}</p>
+            <p className="text-xs font-mono text-gray-600 font-semibold bg-gray-100 inline-block px-1.5 py-0.5 rounded mt-1 cursor-pointer" onClick={handleCopyInviteLink}>
+               Kode: {roomData?.code} (Ketuk utk Salin Link)
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => handleLogout()} className="text-gray-600 p-2 bg-gray-100 rounded-lg"><LogOut size={20} /></button>
