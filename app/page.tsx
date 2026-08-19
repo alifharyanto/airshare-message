@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle, Link } from "lucide-react";
+import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle, Link, Menu } from "lucide-react";
 
 type Participant = { username: string; status: string; joined_at: string; typing: number };
 type Attachment = { url: string; name: string; type: string };
@@ -30,6 +30,9 @@ export default function App() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
+  
+  // State untuk Sidebar Mobile
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -46,14 +49,13 @@ export default function App() {
       setRoomCode(joinCode);
     }
 
-    const token = localStorage.getItem("chat_session_token");
+    const token = sessionStorage.getItem("chat_session_token");
 
     if (token) {
       fetch(`/api/chat?action=check_session&token=${token}`)
         .then(res => res.json())
         .then(data => {
           if (data.success) {
-            // Mencegah masuk ke URL Private Room orang lain
             if (urlRoomId && urlRoomId !== data.room.id) {
                alert("Sesi tidak cocok! Kamu tidak bisa menggunakan link private orang lain.");
                window.location.href = '/';
@@ -66,13 +68,11 @@ export default function App() {
             setIsOwner(data.isOwner);
             setView("chat");
             
-            // Paksa update URL di address bar jika sebelumnya kosongan (hanya domain utama)
             if (!urlRoomId) {
               window.history.replaceState(null, '', `/?room=${data.room.id}`);
             }
-
           } else {
-            localStorage.removeItem("chat_session_token");
+            sessionStorage.removeItem("chat_session_token");
             if (urlRoomId) {
               alert("Akses Ditolak! Sesi telah digunakan atau tidak valid. Silakan gabung via Kode Invite.");
               window.location.href = '/';
@@ -82,9 +82,8 @@ export default function App() {
         }).catch(() => setIsLoading(false));
     } else {
       setIsLoading(false);
-      // Jika mencoba akses link private tapi tidak punya akun lokal
       if (urlRoomId) {
-        alert("Akses Ditolak! Link ini adalah sesi private dan sudah digunakan.");
+        alert("Akses Ditolak! Sesi ini milik orang lain. Silakan buat akun/nama baru untuk bergabung.");
         window.location.href = '/';
       }
     }
@@ -102,7 +101,7 @@ export default function App() {
           setParticipants(data.participants);
           setIsOwner(data.isOwner);
         } else if (data.expired) {
-          alert("Sesi ruangan ini telah diakhiri / expired.");
+          alert("Sesi ruangan ini telah diakhiri oleh Pembuat Room (Owner) atau batas waktu telah habis.");
           handleLogout(false);
         }
       };
@@ -116,7 +115,6 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // FUNGSI BUAT ROOM BARU
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (parseInt(duration) > 24 || parseInt(duration) < 1) return alert("Durasi maksimal 24 jam!");
@@ -131,13 +129,11 @@ export default function App() {
     const res = await fetch("/api/chat?action=create_room", { method: "POST", body: formData });
     const data = await res.json();
     if (data.success) {
-      localStorage.setItem("chat_session_token", data.sessionToken);
-      // HARD REDIRECT agar URL di address bar browser 100% langsung berubah
+      sessionStorage.setItem("chat_session_token", data.sessionToken);
       window.location.href = `/?room=${data.roomId}`;
     }
   };
 
-  // FUNGSI JOIN ROOM
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     const formData = new FormData();
@@ -147,8 +143,7 @@ export default function App() {
     const res = await fetch("/api/chat?action=join_room", { method: "POST", body: formData });
     const data = await res.json();
     if (data.success) {
-      localStorage.setItem("chat_session_token", data.sessionToken);
-      // HARD REDIRECT
+      sessionStorage.setItem("chat_session_token", data.sessionToken);
       window.location.href = `/?room=${data.roomId}`; 
     } else {
       alert(data.error);
@@ -161,9 +156,9 @@ export default function App() {
       formData.append("token", sessionToken);
       await fetch("/api/chat?action=leave", { method: "POST", body: formData });
     }
-    localStorage.removeItem("chat_session_token");
+    sessionStorage.removeItem("chat_session_token");
     setSessionToken("");
-    window.location.href = '/'; // Reset URL Total
+    window.location.href = '/'; 
   };
 
   const handleCloseRoom = async () => {
@@ -178,7 +173,7 @@ export default function App() {
     if (roomData) {
       const inviteUrl = `${window.location.origin}/?join=${roomData.code}`;
       navigator.clipboard.writeText(inviteUrl);
-      alert("Link Invite Berhasil Disalin!\n\nKirimkan link ini ke temanmu. Link ini aman dan tidak akan membocorkan sesimu.");
+      alert("Link Invite Berhasil Disalin!\n\nKirimkan link ini ke temanmu.");
     }
   };
 
@@ -288,12 +283,62 @@ export default function App() {
     );
   }
 
+  // --- KOMPONEN ISI SIDEBAR ---
+  const SidebarContent = () => (
+    <>
+      <div className="p-4 bg-gray-50 flex flex-col gap-1 border-b">
+        <h2 className="font-bold text-xl text-gray-800 truncate">{roomData?.name}</h2>
+        <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-200 w-max px-2 py-1 rounded font-medium">
+          <span>Kode:</span> <span className="font-bold text-black tracking-wider text-sm">{roomData?.code}</span>
+        </div>
+      </div>
+      
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-3 bg-white font-bold text-sm text-[#008069] flex justify-between items-center border-b shadow-sm">
+          <div className="flex items-center gap-2"><Users size={18} /> Peserta</div>
+          <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">{participants.filter(p=>p.status==='online').length} / {roomData?.max_users}</span>
+        </div>
+        
+        {participants.map((user, i) => (
+          <div key={i} className={`flex items-center gap-3 p-3 border-b border-gray-100 ${user.status === 'left' ? 'opacity-50 grayscale' : ''}`}>
+            <img src={`https://ui-avatars.com/api/?name=${user.username}&background=${user.status==='online' ? '00a884' : 'ccc'}&color=fff`} className="w-10 h-10 rounded-full shadow-sm" alt="Avatar" />
+            <div className="flex flex-col flex-1 overflow-hidden">
+              <span className="font-bold text-gray-800 text-sm truncate flex items-center gap-1.5">
+                {user.username} {user.username === username && "(Kamu)"}
+                {/* LABEL OWNER (Urutan index 0 di DB) */}
+                {i === 0 && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200 uppercase tracking-wider">Owner</span>}
+                {user.status === 'left' && <span className="text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded border border-red-200 uppercase tracking-wider">Keluar</span>}
+              </span>
+              <span className="text-[11px] text-gray-500 flex items-center gap-1 mt-0.5"><Clock size={10}/> Join: {formatTime(user.joined_at)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      
+      <div className="p-4 border-t bg-gray-50 flex flex-col gap-3">
+        <button onClick={handleCopyInviteLink} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-blue-500 rounded-xl hover:bg-blue-600 font-bold transition shadow-sm">
+          <Link size={18}/> Salin Link Invite
+        </button>
+
+        <button onClick={() => { handleLogout(); setIsSidebarOpen(false); }} className="w-full flex items-center justify-center gap-2 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 font-bold transition shadow-sm">
+          <LogOut size={18}/> {isOwner ? "Keluar & Tutup Room" : "Keluar Room"}
+        </button>
+        
+        {isOwner && (
+          <button onClick={handleCloseRoom} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-red-500 rounded-xl hover:bg-red-600 font-bold transition shadow-md">
+            <AlertCircle size={18}/> Hapus Room
+          </button>
+        )}
+      </div>
+    </>
+  );
+
   // ==== TAMPILAN CHAT ====
   return (
-    <div className="flex h-screen bg-gray-100 font-sans">
+    <div className="flex h-screen bg-gray-100 font-sans overflow-hidden">
       
       {previewImage && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4 backdrop-blur-sm transition-all">
+        <div className="fixed inset-0 z-[60] bg-black/90 flex flex-col items-center justify-center p-4 backdrop-blur-sm transition-all">
           <button onClick={() => setPreviewImage(null)} className="absolute top-6 right-6 text-white bg-white/10 p-2 rounded-full hover:bg-red-500 transition"><X size={24} /></button>
           <img src={previewImage.url} alt="Preview" className="max-w-full max-h-[75vh] object-contain shadow-2xl rounded-sm" />
           <div className="mt-6 flex flex-col items-center gap-2">
@@ -305,67 +350,42 @@ export default function App() {
         </div>
       )}
 
-      <div className="hidden md:flex w-[350px] flex-col bg-white border-r">
-        <div className="p-4 bg-gray-50 flex flex-col gap-1 border-b">
-          <h2 className="font-bold text-xl text-gray-800">{roomData?.name}</h2>
-          <div className="flex items-center justify-between mt-1">
-            <div className="flex items-center gap-2 text-xs text-gray-600 bg-gray-200 w-max px-2 py-1 rounded font-medium">
-              <span>Kode:</span> <span className="font-bold text-black tracking-wider text-sm">{roomData?.code}</span>
-            </div>
-          </div>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto">
-          <div className="p-3 bg-white font-bold text-sm text-[#008069] flex justify-between items-center border-b shadow-sm">
-            <div className="flex items-center gap-2"><Users size={18} /> Peserta</div>
-            <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-600">{participants.filter(p=>p.status==='online').length} / {roomData?.max_users}</span>
-          </div>
-          
-          {participants.map((user, i) => (
-            <div key={i} className={`flex items-center gap-3 p-3 border-b border-gray-100 ${user.status === 'left' ? 'opacity-50 grayscale' : ''}`}>
-              <img src={`https://ui-avatars.com/api/?name=${user.username}&background=${user.status==='online' ? '00a884' : 'ccc'}&color=fff`} className="w-10 h-10 rounded-full shadow-sm" alt="Avatar" />
-              <div className="flex flex-col flex-1">
-                <span className="font-bold text-gray-800 text-sm">
-                  {user.username} {user.username === username && "(Kamu)"}
-                  {user.status === 'left' && <span className="ml-2 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-bold">Keluar</span>}
-                </span>
-                <span className="text-[11px] text-gray-500 flex items-center gap-1 mt-0.5"><Clock size={10}/> Join: {formatTime(user.joined_at)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-        
-        <div className="p-4 border-t bg-gray-50 flex flex-col gap-3">
-          <button onClick={handleCopyInviteLink} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-blue-500 rounded-xl hover:bg-blue-600 font-bold transition shadow-sm">
-            <Link size={18}/> Salin Link Invite
-          </button>
+      {/* OVERLAY UNTUK SIDEBAR MOBILE */}
+      {isSidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 md:hidden transition-opacity" onClick={() => setIsSidebarOpen(false)}></div>
+      )}
 
-          <button onClick={() => handleLogout()} className="w-full flex items-center justify-center gap-2 py-2.5 text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-100 font-bold transition shadow-sm">
-            <LogOut size={18}/> Keluar Room
-          </button>
-          
-          {isOwner && (
-            <button onClick={handleCloseRoom} className="w-full flex items-center justify-center gap-2 py-2.5 text-white bg-red-500 rounded-xl hover:bg-red-600 font-bold transition shadow-md">
-              <AlertCircle size={18}/> Tutup Room (Hapus)
-            </button>
-          )}
+      {/* SIDEBAR - DESKTOP & MOBILE */}
+      <div className={`fixed inset-y-0 right-0 z-50 w-[80%] max-w-[320px] bg-white shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden flex flex-col ${isSidebarOpen ? "translate-x-0" : "translate-x-full"}`}>
+        <div className="flex justify-end p-2 bg-gray-50 border-b">
+           <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-gray-500 hover:text-red-500 bg-white rounded-lg border shadow-sm"><X size={20}/></button>
         </div>
+        <SidebarContent />
       </div>
 
+      <div className="hidden md:flex w-[350px] flex-col bg-white border-r z-10">
+        <SidebarContent />
+      </div>
+
+      {/* AREA CHAT UTAMA */}
       <div className="flex-1 flex flex-col relative bg-[#efeae2]">
         
-        <div className="md:hidden bg-white px-4 py-3 flex items-center justify-between border-b shadow-sm z-10">
+        {/* HEADER */}
+        <div className="bg-white px-4 py-3 flex items-center justify-between border-b shadow-sm z-10">
           <div>
             <h1 className="font-bold text-gray-800">{roomData?.name}</h1>
-            <p className="text-xs font-mono text-gray-600 font-semibold bg-gray-100 inline-block px-1.5 py-0.5 rounded mt-1 cursor-pointer" onClick={handleCopyInviteLink}>
-               Kode: {roomData?.code} (Ketuk utk Salin Link)
+            <div className="hidden md:block text-xs text-gray-500 mt-0.5">Online: {participants.filter(p=>p.status==='online').length} orang</div>
+            {/* Munculkan tombol link kecil di HP */}
+            <p className="md:hidden text-xs font-mono text-gray-600 font-semibold bg-gray-100 inline-block px-1.5 py-0.5 rounded mt-1 cursor-pointer" onClick={handleCopyInviteLink}>
+               Kode: {roomData?.code} (Salin)
             </p>
           </div>
+          
           <div className="flex items-center gap-2">
-            <button onClick={() => handleLogout()} className="text-gray-600 p-2 bg-gray-100 rounded-lg"><LogOut size={20} /></button>
-            {isOwner && (
-              <button onClick={handleCloseRoom} className="text-white p-2 bg-red-500 rounded-lg shadow"><AlertCircle size={20} /></button>
-            )}
+            {/* TOMBOL HAMBURGER MOBILE */}
+            <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-gray-600 p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition shadow-sm">
+              <Menu size={22} />
+            </button>
           </div>
         </div>
 

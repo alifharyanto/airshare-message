@@ -11,7 +11,6 @@ export async function GET(req: NextRequest) {
   const action = url.searchParams.get("action");
 
   try {
-    // === 1. CEK SESSION SAAT WEB DI-REFRESH ===
     if (action === "check_session") {
       const token = url.searchParams.get("token");
       const [users]: any = await pool.query(`SELECT * FROM room_participants WHERE session_token = ? AND status = 'online'`, [token]);
@@ -22,14 +21,12 @@ export async function GET(req: NextRequest) {
       const [rooms]: any = await pool.query(`SELECT *, (expires_at <= CURRENT_TIMESTAMP) as is_expired FROM rooms WHERE id = ?`, [roomId]);
       if (rooms.length === 0 || rooms[0].is_expired === 1) return NextResponse.json({ success: false, error: "Room sudah expired" });
 
-      // Deteksi apakah user ini adalah pembuat (Owner)
       const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [roomId]);
       const isOwner = ownerRows.length > 0 && ownerRows[0].session_token === token;
 
       return NextResponse.json({ success: true, room: rooms[0], user: users[0], isOwner });
     }
 
-    // === 2. POLLING DATA ===
     if (action === "poll") {
       const roomId = url.searchParams.get("roomId");
       const token = url.searchParams.get("token");
@@ -41,17 +38,18 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: false, expired: true });
       }
 
-      // Deteksi Owner
       const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [roomId]);
       const isOwner = ownerRows.length > 0 && ownerRows[0].session_token === token;
 
       const [messages]: any = await pool.query(`SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC`, [roomId]);
 
+      // ORDER BY id ASC memastikan Pembuat Room (Owner) selalu berada di urutan paling atas
       const [participants]: any = await pool.query(`
         SELECT username, status, joined_at, 
         (TIMESTAMPDIFF(SECOND, is_typing, CURRENT_TIMESTAMP) < 5) as typing
         FROM room_participants 
         WHERE room_id = ?
+        ORDER BY id ASC
       `, [roomId]);
 
       return NextResponse.json({ success: true, messages, participants, room: rooms[0], isOwner });
@@ -139,28 +137,39 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true });
     }
 
+    // === PERBAIKAN LOGIKA LEAVE & TUTUP ROOM ===
     if (action === "leave") {
       const token = formData.get("token") as string;
       const [userRows]: any = await pool.query(`SELECT room_id, username FROM room_participants WHERE session_token = ?`, [token]);
+      
       if (userRows.length > 0) {
-        await pool.query(`UPDATE room_participants SET status = 'left' WHERE session_token = ?`, [token]);
-        await pool.query(`INSERT INTO room_messages (room_id, username, text, type) VALUES (?, 'System', ?, 'system')`, [userRows[0].room_id, `${userRows[0].username} telah meninggalkan ruangan.`]);
+        const { room_id, username } = userRows[0];
+        
+        // Cek apakah user yang keluar adalah sang Owner
+        const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [room_id]);
+        const isOwner = ownerRows.length > 0 && ownerRows[0].session_token === token;
+
+        if (isOwner) {
+          // JIKA OWNER KELUAR -> ROOM OTOMATIS TERTUTUP UNTUK SEMUA ORANG
+          await pool.query(`UPDATE rooms SET expires_at = CURRENT_TIMESTAMP WHERE id = ?`, [room_id]);
+          await pool.query(`INSERT INTO room_messages (room_id, username, text, type) VALUES (?, 'System', ?, 'system')`, [room_id, `Pembuat Room (${username}) telah keluar. Ruangan ditutup.`]);
+        } else {
+          // JIKA MEMBER BIASA KELUAR
+          await pool.query(`UPDATE room_participants SET status = 'left' WHERE session_token = ?`, [token]);
+          await pool.query(`INSERT INTO room_messages (room_id, username, text, type) VALUES (?, 'System', ?, 'system')`, [room_id, `${username} telah meninggalkan ruangan.`]);
+        }
       }
       return NextResponse.json({ success: true });
     }
 
-    // === 6. TUTUP ROOM (KHUSUS OWNER) ===
+    // Tutup Room Manual via Tombol
     if (action === "close_room") {
       const token = formData.get("token") as string;
       const [userRows]: any = await pool.query(`SELECT room_id FROM room_participants WHERE session_token = ?`, [token]);
-      
       if (userRows.length > 0) {
         const roomId = userRows[0].room_id;
-        // Cek lagi apakah yang request benar-benar Owner
         const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [roomId]);
-        
         if (ownerRows.length > 0 && ownerRows[0].session_token === token) {
-          // Set expires_at ke waktu sekarang agar semua tertendang!
           await pool.query(`UPDATE rooms SET expires_at = CURRENT_TIMESTAMP WHERE id = ?`, [roomId]);
         }
       }
