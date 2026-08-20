@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import pool from "@/lib/db";
-import { writeFile, mkdir } from "fs/promises";
-import { join } from "path";
 import crypto from "crypto";
+// HAPUS import "fs" dan "path" karena dilarang keras oleh Vercel
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +13,6 @@ export async function GET(req: NextRequest) {
     if (action === "check_session") {
       const token = url.searchParams.get("token");
       const [users]: any = await pool.query(`SELECT * FROM room_participants WHERE session_token = ? AND status = 'online'`, [token]);
-      
       if (users.length === 0) return NextResponse.json({ success: false });
 
       const roomId = users[0].room_id;
@@ -34,22 +32,17 @@ export async function GET(req: NextRequest) {
       await pool.query(`UPDATE room_participants SET last_seen = CURRENT_TIMESTAMP WHERE session_token = ?`, [token]);
 
       const [rooms]: any = await pool.query(`SELECT *, (expires_at <= CURRENT_TIMESTAMP) as is_expired FROM rooms WHERE id = ?`, [roomId]);
-      if (rooms.length === 0 || rooms[0].is_expired === 1) {
-        return NextResponse.json({ success: false, expired: true });
-      }
+      if (rooms.length === 0 || rooms[0].is_expired === 1) return NextResponse.json({ success: false, expired: true });
 
       const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [roomId]);
       const isOwner = ownerRows.length > 0 && ownerRows[0].session_token === token;
 
       const [messages]: any = await pool.query(`SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC`, [roomId]);
 
-      // ORDER BY id ASC memastikan Pembuat Room (Owner) selalu berada di urutan paling atas
       const [participants]: any = await pool.query(`
         SELECT username, status, joined_at, 
         (TIMESTAMPDIFF(SECOND, is_typing, CURRENT_TIMESTAMP) < 5) as typing
-        FROM room_participants 
-        WHERE room_id = ?
-        ORDER BY id ASC
+        FROM room_participants WHERE room_id = ? ORDER BY id ASC
       `, [roomId]);
 
       return NextResponse.json({ success: true, messages, participants, room: rooms[0], isOwner });
@@ -114,16 +107,25 @@ export async function POST(req: NextRequest) {
       const { room_id, username } = userRows[0];
       const attachments = [];
 
-      const uploadDir = join(process.cwd(), "public", "uploads");
-      try { await mkdir(uploadDir, { recursive: true }); } catch (e) {}
-
+      // PERBAIKAN VERCEL: Ubah File menjadi Base64 Text (Tanpa save ke folder)
       for (const file of files) {
         if (file && file.size > 0) {
+          // Batasan 2MB agar database TiDB tidak lag
+          if (file.size > 2 * 1024 * 1024) continue; 
+
           const bytes = await file.arrayBuffer();
           const buffer = Buffer.from(bytes);
-          const uniqueName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-          await writeFile(join(uploadDir, uniqueName), buffer);
-          attachments.push({ url: `/uploads/${uniqueName}`, name: file.name, type: file.type.startsWith("image/") ? "image" : "file" });
+          
+          // Konversi ke format Data URI (Base64)
+          const mimeType = file.type;
+          const base64Data = buffer.toString('base64');
+          const dataURI = `data:${mimeType};base64,${base64Data}`;
+
+          attachments.push({ 
+            url: dataURI, 
+            name: file.name, 
+            type: file.type.startsWith("image/") ? "image" : "file" 
+          });
         }
       }
 
@@ -137,24 +139,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true });
     }
 
-    // === PERBAIKAN LOGIKA LEAVE & TUTUP ROOM ===
     if (action === "leave") {
       const token = formData.get("token") as string;
       const [userRows]: any = await pool.query(`SELECT room_id, username FROM room_participants WHERE session_token = ?`, [token]);
       
       if (userRows.length > 0) {
         const { room_id, username } = userRows[0];
-        
-        // Cek apakah user yang keluar adalah sang Owner
         const [ownerRows]: any = await pool.query(`SELECT session_token FROM room_participants WHERE room_id = ? ORDER BY id ASC LIMIT 1`, [room_id]);
         const isOwner = ownerRows.length > 0 && ownerRows[0].session_token === token;
 
         if (isOwner) {
-          // JIKA OWNER KELUAR -> ROOM OTOMATIS TERTUTUP UNTUK SEMUA ORANG
           await pool.query(`UPDATE rooms SET expires_at = CURRENT_TIMESTAMP WHERE id = ?`, [room_id]);
           await pool.query(`INSERT INTO room_messages (room_id, username, text, type) VALUES (?, 'System', ?, 'system')`, [room_id, `Pembuat Room (${username}) telah keluar. Ruangan ditutup.`]);
         } else {
-          // JIKA MEMBER BIASA KELUAR
           await pool.query(`UPDATE room_participants SET status = 'left' WHERE session_token = ?`, [token]);
           await pool.query(`INSERT INTO room_messages (room_id, username, text, type) VALUES (?, 'System', ?, 'system')`, [room_id, `${username} telah meninggalkan ruangan.`]);
         }
@@ -162,7 +159,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true });
     }
 
-    // Tutup Room Manual via Tombol
     if (action === "close_room") {
       const token = formData.get("token") as string;
       const [userRows]: any = await pool.query(`SELECT room_id FROM room_participants WHERE session_token = ?`, [token]);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle, Link, Menu } from "lucide-react";
+import { Send, Paperclip, File as FileIcon, X, LogOut, Image as ImageIcon, Copy, Check, Users, Clock, Info, Download, AlertCircle, Link, Menu, Loader2 } from "lucide-react";
 
 type Participant = { username: string; status: string; joined_at: string; typing: number };
 type Attachment = { url: string; name: string; type: string };
@@ -12,6 +12,7 @@ export default function App() {
   const [view, setView] = useState<"auth" | "chat">("auth");
   const [authMode, setAuthMode] = useState<"join" | "create">("join");
   const [isLoading, setIsLoading] = useState(true);
+  const [isSending, setIsSending] = useState(false); // State untuk loading kirim file
 
   const [username, setUsername] = useState("");
   const [roomCode, setRoomCode] = useState("");
@@ -31,14 +32,12 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
   
-  // State untuk Sidebar Mobile
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 1. CEK URL & SESSION
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const joinCode = urlParams.get('join'); 
@@ -89,7 +88,6 @@ export default function App() {
     }
   }, []);
 
-  // 2. POLLING DATA
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (view === "chat" && sessionToken && roomData) {
@@ -106,7 +104,7 @@ export default function App() {
         }
       };
       pollData();
-      interval = setInterval(pollData, 2000);
+      interval = setInterval(pollData, 3000); // Naikkan jeda jadi 3 detik biar API ga berat
     }
     return () => clearInterval(interval);
   }, [view, sessionToken, roomData]);
@@ -188,14 +186,28 @@ export default function App() {
 
   const handleSend = async () => {
     if (!inputText.trim() && selectedFiles.length === 0) return;
+    
+    // VALIDASI UKURAN FILE AGAR TIDAK NGELAG (Max 2MB per file)
+    for (let i = 0; i < selectedFiles.length; i++) {
+      if (selectedFiles[i].size > 2 * 1024 * 1024) {
+        alert(`Gagal! Ukuran file "${selectedFiles[i].name}" terlalu besar. Maksimal 2 MB per file.`);
+        return;
+      }
+    }
+
+    setIsSending(true);
+
     const formData = new FormData();
     formData.append("token", sessionToken);
     formData.append("text", inputText);
     selectedFiles.forEach((file) => formData.append("files", file));
+    
     setInputText("");
     setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    
     await fetch("/api/chat?action=send_message", { method: "POST", body: formData });
+    setIsSending(false);
   };
 
   const handleCopy = (text: string, id: string) => {
@@ -305,7 +317,6 @@ export default function App() {
             <div className="flex flex-col flex-1 overflow-hidden">
               <span className="font-bold text-gray-800 text-sm truncate flex items-center gap-1.5">
                 {user.username} {user.username === username && "(Kamu)"}
-                {/* LABEL OWNER (Urutan index 0 di DB) */}
                 {i === 0 && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200 uppercase tracking-wider">Owner</span>}
                 {user.status === 'left' && <span className="text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded border border-red-200 uppercase tracking-wider">Keluar</span>}
               </span>
@@ -333,7 +344,6 @@ export default function App() {
     </>
   );
 
-  // ==== TAMPILAN CHAT ====
   return (
     <div className="flex h-screen bg-gray-100 font-sans overflow-hidden">
       
@@ -350,12 +360,10 @@ export default function App() {
         </div>
       )}
 
-      {/* OVERLAY UNTUK SIDEBAR MOBILE */}
       {isSidebarOpen && (
         <div className="fixed inset-0 bg-black/50 z-40 md:hidden transition-opacity" onClick={() => setIsSidebarOpen(false)}></div>
       )}
 
-      {/* SIDEBAR - DESKTOP & MOBILE */}
       <div className={`fixed inset-y-0 right-0 z-50 w-[80%] max-w-[320px] bg-white shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden flex flex-col ${isSidebarOpen ? "translate-x-0" : "translate-x-full"}`}>
         <div className="flex justify-end p-2 bg-gray-50 border-b">
            <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-gray-500 hover:text-red-500 bg-white rounded-lg border shadow-sm"><X size={20}/></button>
@@ -367,22 +375,17 @@ export default function App() {
         <SidebarContent />
       </div>
 
-      {/* AREA CHAT UTAMA */}
       <div className="flex-1 flex flex-col relative bg-[#efeae2]">
-        
-        {/* HEADER */}
         <div className="bg-white px-4 py-3 flex items-center justify-between border-b shadow-sm z-10">
           <div>
             <h1 className="font-bold text-gray-800">{roomData?.name}</h1>
             <div className="hidden md:block text-xs text-gray-500 mt-0.5">Online: {participants.filter(p=>p.status==='online').length} orang</div>
-            {/* Munculkan tombol link kecil di HP */}
             <p className="md:hidden text-xs font-mono text-gray-600 font-semibold bg-gray-100 inline-block px-1.5 py-0.5 rounded mt-1 cursor-pointer" onClick={handleCopyInviteLink}>
                Kode: {roomData?.code} (Salin)
             </p>
           </div>
           
           <div className="flex items-center gap-2">
-            {/* TOMBOL HAMBURGER MOBILE */}
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-gray-600 p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition shadow-sm">
               <Menu size={22} />
             </button>
@@ -467,22 +470,23 @@ export default function App() {
         )}
 
         <div className="bg-[#f0f2f5] p-3 md:p-4 flex items-end gap-2 z-20 border-t border-gray-200">
-          <input type="file" multiple className="hidden" ref={fileInputRef} onChange={(e) => { if(e.target.files) setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]) }} />
-          <button onClick={() => fileInputRef.current?.click()} className="p-3 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-full transition">
+          <input type="file" multiple className="hidden" ref={fileInputRef} onChange={(e) => { if(e.target.files) setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]) }} disabled={isSending} />
+          <button onClick={() => fileInputRef.current?.click()} className="p-3 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-full transition" disabled={isSending}>
             <Paperclip size={24} />
           </button>
           
           <textarea
-            placeholder="Ketik pesan..."
-            className="flex-1 bg-white text-gray-900 px-4 py-3.5 rounded-xl max-h-32 min-h-[48px] resize-none focus:outline-none shadow-sm text-[15px] font-medium border border-gray-200 focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition"
+            placeholder={isSending ? "Mengirim file..." : "Ketik pesan..."}
+            className="flex-1 bg-white text-gray-900 px-4 py-3.5 rounded-xl max-h-32 min-h-[48px] resize-none focus:outline-none shadow-sm text-[15px] font-medium border border-gray-200 focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition disabled:bg-gray-100 disabled:text-gray-400"
             rows={1}
             value={inputText}
             onChange={handleTyping}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+            disabled={isSending}
           />
           
-          <button onClick={handleSend} disabled={!inputText.trim() && selectedFiles.length === 0} className="p-3.5 bg-[#00a884] text-white rounded-full hover:bg-[#008f6f] shadow-md disabled:opacity-50 transition mb-0.5">
-            <Send size={22} className="ml-1" />
+          <button onClick={handleSend} disabled={isSending || (!inputText.trim() && selectedFiles.length === 0)} className="p-3.5 bg-[#00a884] text-white rounded-full hover:bg-[#008f6f] shadow-md disabled:opacity-50 transition mb-0.5">
+            {isSending ? <Loader2 size={22} className="animate-spin ml-1" /> : <Send size={22} className="ml-1" />}
           </button>
         </div>
 
